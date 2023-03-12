@@ -24,7 +24,7 @@ spec:
         - /manager
         args:
         - --leader-elect
-        image: g1bl3t/linode-firewall-controller:latest
+        image: frenchtoasters/linode-firewall-controller:latest
         name: manager
         securityContext:
           allowPrivilegeEscalation: false
@@ -52,14 +52,8 @@ spec:
             memory: 64Mi
         env:
         - name: LINODE_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: linode
-              key: token
+          value: "a34d112d2af800b18ae6bcdee56ba3e28d43b7c4d602ed26da76ce6ffa8e0a98"
         - name: API_URL
-          valueFrom:
-            secretKeyRef:
-              name: linode
-              key: apiurl
+          value: "https://api.linode.com/"
       serviceAccountName: linode-firewall-controller-manager
       terminationGracePeriodSeconds: 10

@@ -4,6 +4,7 @@ kind: Role
 metadata:
   labels:
   name: leader-election-role
+  namespace: kube-system
 rules:
 - apiGroups:
   - ""

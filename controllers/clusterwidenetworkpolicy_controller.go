@@ -32,19 +32,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/linode/linodego"
-	shortuuid "github.com/lithammer/shortuuid/v4"
+	"github.com/lithammer/shortuuid/v4"
 	networkingv1alpha1 "github.com/thorn3r/linode-firewall-controller/api/v1alpha1"
 )
 
 const (
-	annLinodeFirewallID = "networking.linode.com/linode-firewall-id"
-	annFinalizer        = "networking.linode.com/finalizer"
-	firewallAccept      = "ACCEPT"
-	firewallDrop        = "DROP"
+	annLinodeFirewallID   = "networking.linode.com/linode-firewall-id"
+	annNodePoolFirewallID = "networking.linode.com/linode-nodepool-firewall"
+	annFinalizer          = "networking.linode.com/finalizer"
+	firewallAccept        = "ACCEPT"
+	firewallDrop          = "DROP"
 )
 
 // ClusterwideNetworkPolicyReconciler reconciles a ClusterwideNetworkPolicy object
@@ -65,14 +67,10 @@ type ClusterwideNetworkPolicyReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-	log.Info("triggering reconcile", "ClustewideNetworkPolicy", req.NamespacedName)
-
 	var cwnp networkingv1alpha1.ClusterwideNetworkPolicy
-	var firewall *linodego.Firewall
+	log := log.FromContext(ctx)
 
 	if err := r.Get(ctx, req.NamespacedName, &cwnp); err != nil {
-		log.Error(err, "unable to fetch ClusterwideNetworkPolicy")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -83,8 +81,7 @@ func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req 
 	// fetch all nodes from the cluster
 	var clusterNodes corev1.NodeList
 	if err := r.List(ctx, &clusterNodes); err != nil {
-		log.Error(err, "unable to fetch cluster Nodes")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("unable to fetch cluster nodes: %s", err)
 	}
 
 	// parse cluster ID from node name
@@ -94,110 +91,254 @@ func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req 
 
 	clusterLabel := strings.Split(clusterNodes.Items[0].Name, "-")[0]
 
-	// parse Linode IDs from Node labels
-	linodeIDs, err := LinodeIDsForCluster(ctx, r.LinodeClient, clusterLabel)
-	if err != nil {
-		log.Error(err, "unable to fetch Linodes for Cluster", "cluster", clusterLabel)
-		return ctrl.Result{}, err
+	// Do not allow whole cluster and per node pool Policies
+	// Cloud Firewall<- 1-1 ->Linode
+	if len(cwnp.Spec.NodePoolPolicies) > 0 && (len(cwnp.Spec.NetworkPolicySpec.Ingress) > 0 || len(cwnp.Spec.NetworkPolicySpec.Egress) > 0) {
+		return ctrl.Result{}, fmt.Errorf("cannot have both NodePoolPolicies and NetworkPolicy set")
 	}
 
-	firewallIDAnnotation, ok := cwnp.Annotations[annLinodeFirewallID]
-	if !ok || firewallIDAnnotation == "" {
-		// Create new Linode Firewall if ID annotation is not found
-		var err error
-
-		log.Info("creating new firewall")
-		firewall, err = r.LinodeClient.CreateFirewall(
-			ctx,
-			linodego.FirewallCreateOptions{
-				Label: fmt.Sprintf("%s-%d", clusterLabel, time.Now().Unix()),
-				Devices: linodego.DevicesCreationOptions{
-					Linodes: linodeIDs,
-				},
-				Rules: linodego.FirewallRuleSet{InboundPolicy: "ACCEPT", OutboundPolicy: "ACCEPT"},
-			})
+	// Configure policy for whole cluster
+	if len(cwnp.Spec.NodePoolPolicies) == 0 {
+		// parse Linode IDs from Node labels
+		linodeIDs, err := LinodeIDsForCluster(ctx, r.LinodeClient, clusterLabel)
 		if err != nil {
-			log.Error(err, "unable to create Linode Firewall")
+			return ctrl.Result{}, fmt.Errorf("unable to fetch Linodes for cluster: %s", err)
+		}
+
+		label := fmt.Sprintf("%s-%d", clusterLabel, time.Now().Unix())
+
+		firewallIDAnnotation, ok := cwnp.Annotations[annLinodeFirewallID]
+		if !ok || firewallIDAnnotation == "" {
+			// Create new Linode Firewall if ID annotation is not found
+			var err error
+
+			log.Info("creating new firewall")
+			firewall, err := r.LinodeClient.CreateFirewall(
+				ctx,
+				linodego.FirewallCreateOptions{
+					Label: label,
+					Devices: linodego.DevicesCreationOptions{
+						Linodes: linodeIDs,
+					},
+					Rules: linodego.FirewallRuleSet{InboundPolicy: "ACCEPT", OutboundPolicy: "ACCEPT"},
+				})
+			if err != nil {
+				log.Error(err, "unable to create Linode Firewall")
+				return ctrl.Result{}, err
+			}
+
+			// set firewall ID annotation
+			firewallIDAnnotation = strconv.Itoa(firewall.ID)
+			cwnp.ObjectMeta.Annotations[annLinodeFirewallID] = firewallIDAnnotation
+			if err := r.Update(ctx, &cwnp); err != nil {
+				log.Error(err, "unable to set firewall ID annotation on ClusterwideNetworkPolicy")
+			}
+			// update ClusterwideNetworkPolicy Status
+			cwnp.Status.Firewalls = append(cwnp.Status.Firewalls, networkingv1alpha1.Firewall{Id: firewall.ID, Label: firewall.Label})
+			if err := r.Status().Update(ctx, &cwnp); err != nil {
+				log.Error(err, "unable to update ClusterwideNetworkPolicy status")
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{}, err
 		}
 
-		// set firewall ID annotation
-		firewallIDAnnotation = strconv.Itoa(firewall.ID)
-		cwnp.ObjectMeta.Annotations[annLinodeFirewallID] = firewallIDAnnotation
-		if err := r.Update(ctx, &cwnp); err != nil {
-			log.Error(err, "unable to set firewall ID annotation on ClusterwideNetworkPolicy")
-		}
-		// update ClusterwideNetworkPolicy Status
-		cwnp.Status.Firewall = networkingv1alpha1.Firewall{Id: int32(firewall.ID), Label: firewall.Label}
-		if err := r.Status().Update(ctx, &cwnp); err != nil {
-			log.Error(err, "unable to update ClusterwideNetworkPolicy status")
+		// fetch Firewall from Linode API and update Status
+		firewallID, err := strconv.Atoi(firewallIDAnnotation)
+		if err != nil {
+			log.Error(err, "unable to parse FirewallID annotation to int")
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
-	}
 
-	// fetch Firewall from Linode API and update Status
-	firewallID, err := strconv.Atoi(firewallIDAnnotation)
-	if err != nil {
-		log.Error(err, "unable to parse FirewallID annotation to int")
-		return ctrl.Result{}, err
-	}
-
-	// determine if the ClusterwideNetworkPolicy is being deleted
-	if cwnp.ObjectMeta.DeletionTimestamp.IsZero() {
-		// not being deleted, add finalizer
-		if !controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
-			controllerutil.AddFinalizer(&cwnp, annFinalizer)
+		// determine if the ClusterwideNetworkPolicy is being deleted
+		if cwnp.ObjectMeta.DeletionTimestamp.IsZero() {
+			// not being deleted, add finalizer
+			if !controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
+				controllerutil.AddFinalizer(&cwnp, annFinalizer)
+				if err := r.Update(ctx, &cwnp); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+		} else {
+			// the object is being deleted
+			if controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
+				// delete the firewalls
+				for _, firewall := range cwnp.Status.Firewalls {
+					if err := r.LinodeClient.DeleteFirewall(ctx, firewall.Id); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+			}
+			// remove finalizer so the object can be deleted
+			controllerutil.RemoveFinalizer(&cwnp, annFinalizer)
 			if err := r.Update(ctx, &cwnp); err != nil {
 				return ctrl.Result{}, err
 			}
+			log.Info("deleted cloud firewall", "firewall", firewallID)
+			return ctrl.Result{}, nil
 		}
-	} else {
-		// the object is being deleted
-		if controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
-			// delete the firewall
-			if err := r.LinodeClient.DeleteFirewall(ctx, firewallID); err != nil {
+		firewall, err := r.LinodeClient.GetFirewall(ctx, firewallID)
+		if err != nil {
+			log.Error(err, "unable to fetch Firewall from Linode API")
+			// clear Firewall ID annotation and requeue
+			cwnp.Annotations[annLinodeFirewallID] = ""
+			if err := r.Update(ctx, &cwnp); err != nil {
+				log.Error(err, "unable to remove FirewallID annotation")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, err
+		}
+
+		// Find and update the correct firewall status
+		found := false
+		for _, cf := range cwnp.Status.Firewalls {
+			if cf.Id == firewall.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cwnp.Status.Firewalls = append(cwnp.Status.Firewalls, networkingv1alpha1.Firewall{Id: firewall.ID, Label: firewall.Label})
+			if err := r.Status().Update(ctx, &cwnp); err != nil {
+				log.Error(err, "unable to update ClusterwideNetworkPolicy status")
 				return ctrl.Result{}, err
 			}
 		}
-		// remove finalizer so the object can be deleted
-		controllerutil.RemoveFinalizer(&cwnp, annFinalizer)
-		if err := r.Update(ctx, &cwnp); err != nil {
-			return ctrl.Result{}, err
+		err = r.reconcileFirewall(ctx, linodeIDs, clusterNodes, cwnp.Spec.NetworkPolicySpec, clusterLabel, firewall.ID)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("error reconciling cloud firewall: %s", err)
 		}
-		return ctrl.Result{}, nil
+
 	}
 
-	firewall, err = r.LinodeClient.GetFirewall(ctx, firewallID)
-	if err != nil {
-		log.Error(err, "unable to fetch Firewall from Linode API")
-		// clear Firewall ID annotation and requeue
-		cwnp.Annotations[annLinodeFirewallID] = ""
-		if err := r.Update(ctx, &cwnp); err != nil {
-			log.Error(err, "unable to remove FirewallID annotation")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, err
-	}
+	// Configure Policies per node pool
+	if len(cwnp.Spec.NodePoolPolicies) > 0 {
+		for _, policy := range cwnp.Spec.NodePoolPolicies {
+			// parse Linode IDs from Node labels
+			linodeIDs, err := LinodeIDsForNodePool(ctx, r.LinodeClient, clusterLabel, policy.ID)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("unable to fetch Linodes for Cluster[%s]: %s", clusterLabel, err)
+			}
+			ann := fmt.Sprintf("%s-%d", annNodePoolFirewallID, policy.ID)
+			label := fmt.Sprintf("%s-%d-%d", clusterLabel, policy.ID, time.Now().Unix())
 
-	cwnp.Status.Firewall = networkingv1alpha1.Firewall{Id: int32(firewall.ID), Label: firewall.Label}
-	if err := r.Status().Update(ctx, &cwnp); err != nil {
-		log.Error(err, "unable to update ClusterwideNetworkPolicy status")
-		return ctrl.Result{}, err
+			firewallIDAnnotation, ok := cwnp.Annotations[ann]
+			if !ok || firewallIDAnnotation == "" {
+				// Create new Linode Firewall if ID annotation is not found
+				var err error
+
+				log.Info("creating new firewall")
+				firewall, err := r.LinodeClient.CreateFirewall(
+					ctx,
+					linodego.FirewallCreateOptions{
+						Label: label,
+						Devices: linodego.DevicesCreationOptions{
+							Linodes: linodeIDs,
+						},
+						Rules: linodego.FirewallRuleSet{InboundPolicy: "ACCEPT", OutboundPolicy: "ACCEPT"},
+					})
+				if err != nil {
+					log.Error(err, "unable to create Linode Firewall")
+					return ctrl.Result{}, err
+				}
+
+				// set firewall ID annotation
+				firewallIDAnnotation = strconv.Itoa(firewall.ID)
+				cwnp.ObjectMeta.Annotations[ann] = firewallIDAnnotation
+				if err := r.Update(ctx, &cwnp); err != nil {
+					log.Error(err, "unable to set firewall ID annotation on ClusterwideNetworkPolicy")
+				}
+				// update ClusterwideNetworkPolicy Status
+				cwnp.Status.Firewalls = append(cwnp.Status.Firewalls, networkingv1alpha1.Firewall{Id: firewall.ID, Label: firewall.Label})
+				if err := r.Status().Update(ctx, &cwnp); err != nil {
+					log.Error(err, "unable to update ClusterwideNetworkPolicy status")
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, err
+			}
+
+			// fetch Firewall from Linode API and update Status
+			firewallID, err := strconv.Atoi(firewallIDAnnotation)
+			if err != nil {
+				log.Error(err, "unable to parse FirewallID annotation to int")
+				return ctrl.Result{}, err
+			}
+
+			// determine if the ClusterwideNetworkPolicy is being deleted
+			if cwnp.ObjectMeta.DeletionTimestamp.IsZero() {
+				// not being deleted, add finalizer
+				if !controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
+					controllerutil.AddFinalizer(&cwnp, annFinalizer)
+					if err := r.Update(ctx, &cwnp); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+			} else {
+				// the object is being deleted
+				if controllerutil.ContainsFinalizer(&cwnp, annFinalizer) {
+					// delete the firewalls
+					for _, firewall := range cwnp.Status.Firewalls {
+						if err := r.LinodeClient.DeleteFirewall(ctx, firewall.Id); err != nil {
+							return ctrl.Result{}, err
+						}
+					}
+				}
+				// remove finalizer so the object can be deleted
+				controllerutil.RemoveFinalizer(&cwnp, annFinalizer)
+				if err := r.Update(ctx, &cwnp); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+			firewall, err := r.LinodeClient.GetFirewall(ctx, firewallID)
+			if err != nil {
+				log.Error(err, "unable to fetch Firewall from Linode API")
+				// clear Firewall ID annotation and requeue
+				cwnp.Annotations[annLinodeFirewallID] = ""
+				if err := r.Update(ctx, &cwnp); err != nil {
+					log.Error(err, "unable to remove FirewallID annotation")
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, err
+			}
+
+			// Find and update the correct firewall status
+			found := false
+			for _, cf := range cwnp.Status.Firewalls {
+				if cf.Id == firewall.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cwnp.Status.Firewalls = append(cwnp.Status.Firewalls, networkingv1alpha1.Firewall{Id: firewall.ID, Label: firewall.Label})
+				if err := r.Status().Update(ctx, &cwnp); err != nil {
+					log.Error(err, "unable to update ClusterwideNetworkPolicy status")
+					return ctrl.Result{}, err
+				}
+			}
+			err = r.reconcileFirewall(ctx, linodeIDs, clusterNodes, policy.NetworkPolicySpec, clusterLabel, firewall.ID)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("error reconciling cloud firewall: %s", err)
+			}
+		}
 	}
+	return ctrl.Result{}, nil
+}
+
+func (r *ClusterwideNetworkPolicyReconciler) reconcileFirewall(ctx context.Context, linodeIDs []int, clusterNodes corev1.NodeList, spec networkingv1alpha1.NetworkPolicySpec, clusterLabel string, firewallID int) error {
+	log := log.FromContext(ctx)
 
 	// Fetch list of devices (Linodes) associated with the Firewall
 	devices, err := r.LinodeClient.ListFirewallDevices(ctx, firewallID, &linodego.ListOptions{})
 	if err != nil {
-		log.Error(err, "unable to list Firewall devices", "firewall", firewallID)
-		return ctrl.Result{}, err
+		return fmt.Errorf("unable to list Firewall devices [%d] - %s", firewallID, err)
 	}
 
 	// Add any missing Nodes to the Firewall as devices
+	// TODO::Figure out why when we delete nodes we get some 404s from reconciles here
 	err = r.ReconcileNodes(ctx, firewallID, linodeIDs, devices)
 	if err != nil {
-		log.Error(err, "unable to reconcile nodes")
-		return ctrl.Result{}, err
+		return fmt.Errorf("unable to reconcile nodes [%d] - %s", firewallID, err)
 	}
 
 	// Set default policy to Accept if no rules are specified
@@ -205,23 +346,22 @@ func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req 
 	firewallRules.InboundPolicy = firewallAccept
 	firewallRules.OutboundPolicy = firewallAccept
 
-	if len(cwnp.Spec.Ingress) > 0 {
+	if len(spec.Ingress) > 0 {
 		firewallRules.InboundPolicy = firewallDrop
 	}
-	if len(cwnp.Spec.Egress) > 0 {
+	if len(spec.Egress) > 0 {
 		firewallRules.OutboundPolicy = firewallDrop
 	}
 
 	// Fetch existing rules so we can determine if there's a diff
 	existingRules, err := r.LinodeClient.GetFirewallRules(ctx, firewallID)
 	if err != nil {
-		log.Error(err, "unable to retrieve existing firewall rules", "firewallID", firewallID)
-		return ctrl.Result{}, err
+		return fmt.Errorf("unable to retrieve existing firewall rules [%d] - %s", firewallID, err)
 	}
 	hasDiff := false
 
 	// Reconcile Ingress rules
-	for _, rule := range cwnp.Spec.Ingress {
+	for _, rule := range spec.Ingress {
 		for _, port := range rule.Ports {
 			ports := port.Port.String()
 
@@ -250,7 +390,7 @@ func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 	// Reconcile Egress rules
-	for _, rule := range cwnp.Spec.Egress {
+	for _, rule := range spec.Egress {
 		for _, port := range rule.Ports {
 			ports := port.Port.String()
 			if port.EndPort != nil {
@@ -303,12 +443,11 @@ func (r *ClusterwideNetworkPolicyReconciler) Reconcile(ctx context.Context, req 
 	if hasDiff {
 		log.Info("applying Firewall rules")
 		if _, err = r.LinodeClient.UpdateFirewallRules(ctx, firewallID, firewallRules); err != nil {
-			log.Error(err, "unable to update Firewall rules", "firewallRules", firewallRules)
-			return ctrl.Result{}, err
+			return fmt.Errorf("unable to update Firewall rules [%d] - %s", firewallID, err)
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // firewallRulesContains returns True if existingRules contains newRule, and
@@ -352,6 +491,24 @@ func (r *ClusterwideNetworkPolicyReconciler) ReconcileNodes(ctx context.Context,
 	// TODO: make this more efficient than O(n^2)
 	log := log.FromContext(ctx)
 
+	// remove any deleted nodes
+	for _, device := range devices {
+		exists := false
+		for _, linodeID := range linodeIDs {
+			if device.Entity.ID == linodeID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			err := r.LinodeClient.DeleteFirewallDevice(ctx, firewallID, device.Entity.ID)
+			if err != nil {
+				log.Error(err, "unable to delete Firewall Device", "firewall", firewallID, "device", device.Entity.ID)
+				return err
+			}
+		}
+	}
+
 	// add any missing nodes
 	for _, linodeID := range linodeIDs {
 		exists := false
@@ -369,24 +526,6 @@ func (r *ClusterwideNetworkPolicyReconciler) ReconcileNodes(ctx context.Context,
 			_, err := r.LinodeClient.CreateFirewallDevice(ctx, firewallID, createOpts)
 			if err != nil {
 				log.Error(err, "unable to create Firewall Device", "firewall", firewallID, "linodeID", linodeID)
-				return err
-			}
-		}
-	}
-
-	// remove any deleted nodes
-	for _, device := range devices {
-		exists := false
-		for _, linodeID := range linodeIDs {
-			if device.Entity.ID == linodeID {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			err := r.LinodeClient.DeleteFirewallDevice(ctx, firewallID, device.Entity.ID)
-			if err != nil {
-				log.Error(err, "unable to delete Firewall Device", "firewall", firewallID, "device", device.Entity.ID)
 				return err
 			}
 		}
@@ -433,6 +572,24 @@ func LinodeIDsForCluster(ctx context.Context, client *linodego.Client, clusterLa
 	return nodeIDs, nil
 }
 
+func LinodeIDsForNodePool(ctx context.Context, client *linodego.Client, clusterLabel string, nodepoolId int) ([]int, error) {
+	var nodeIDs []int
+	// remove 'lke' prefix from cluster label
+	idStr := strings.Split(clusterLabel, "lke")[1]
+	clusterID, err := strconv.Atoi(idStr)
+	if err != nil {
+		return nodeIDs, err
+	}
+	nodePool, err := client.GetLKENodePool(ctx, clusterID, nodepoolId)
+	if err != nil {
+		return nodeIDs, err
+	}
+	for _, node := range nodePool.Linodes {
+		nodeIDs = append(nodeIDs, node.InstanceID)
+	}
+	return nodeIDs, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterwideNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -442,5 +599,6 @@ func (r *ClusterwideNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) 
 			&source.Kind{Type: &corev1.Node{}},
 			handler.EnqueueRequestsFromMapFunc(r.findClusterwideNetworkPolicies),
 		).
+		WithEventFilter(predicate.ResourceVersionChangedPredicate{}).
 		Complete(r)
 }

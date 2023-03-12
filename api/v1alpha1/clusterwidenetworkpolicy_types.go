@@ -26,6 +26,27 @@ import (
 
 // ClusterwideNetworkPolicySpec defines the desired state of ClusterwideNetworkPolicy
 type ClusterwideNetworkPolicySpec struct {
+	// NetworkPolicySpec used for clusterwide defaults
+	// +optional
+	NetworkPolicySpec NetworkPolicySpec `json:"networkpolicy,omitempty"`
+
+	// NodePoolPolicies list of NodePoolNetworkPolicySpec for each nodepool
+	// +optional
+	NodePoolPolicies []NodePoolNetworkPolicySpec `json:"nodepoolpolicies,omitempty"`
+}
+
+// NodePoolNetworkPolicySpec defines the desired state of a nodepools NetworkPolicy
+type NodePoolNetworkPolicySpec struct {
+	// Id of the LKE Nodepool
+	ID int `json:"nodepoolid"`
+
+	// NetworkPolicySpec for the LKE Nodepool
+	// +optional
+	NetworkPolicySpec NetworkPolicySpec `json:"networkpolicy,omitempty"`
+}
+
+// NetworkPolicySpec defines the desired state of a NetworkPolicy
+type NetworkPolicySpec struct {
 	// List of Ingress Rules to be applied to the Linode Firewall
 	// +optional
 	Ingress []IngressRule `json:"ingress,omitempty"`
@@ -57,15 +78,15 @@ type EgressRule struct {
 
 // ClusterwideNetworkPolicyStatus defines the observed state of ClusterwideNetworkPolicy
 type ClusterwideNetworkPolicyStatus struct {
-	// The Linode Firewall backing the ClusterwideNetworkPolicy
+	// The Linode Firewalls backing the ClusterwideNetworkPolicy
 	// +optional
-	Firewall Firewall `json:"firewall,omitempty"`
+	Firewalls []Firewall `json:"firewalls,omitempty"`
 }
 
 type Firewall struct {
 	//+kubebuilder:validation:Minimum=0
 	// The ID of the Linode Firewall
-	Id int32 `json:"id"`
+	Id int `json:"id"`
 
 	//+kubebuilder:validation:MinLength=0
 	// The label of the Linode Firewall

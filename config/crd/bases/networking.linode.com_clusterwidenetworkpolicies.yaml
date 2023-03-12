@@ -39,130 +39,297 @@ spec:
             description: ClusterwideNetworkPolicySpec defines the desired state of
               ClusterwideNetworkPolicy
             properties:
-              egress:
-                description: List of Egress Rules to be applied to the Linode Firewall
+              networkpolicy:
+                description: NetworkPolicySpec used for clusterwide defaults
+                properties:
+                  egress:
+                    description: List of Egress Rules to be applied to the Linode
+                      Firewall
+                    items:
+                      properties:
+                        ports:
+                          description: List of destination ports to allow Egress to
+                          items:
+                            description: NetworkPolicyPort describes a port to allow
+                              traffic on
+                            properties:
+                              endPort:
+                                description: If set, indicates that the range of ports
+                                  from port to endPort, inclusive, should be allowed
+                                  by the policy. This field cannot be defined if the
+                                  port field is not defined or if the port field is
+                                  defined as a named (string) port. The endPort must
+                                  be equal or greater than port.
+                                format: int32
+                                type: integer
+                              port:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: The port on the given protocol. This
+                                  can either be a numerical or named port on a pod.
+                                  If this field is not provided, this matches all
+                                  port names and numbers. If present, only traffic
+                                  on the specified protocol AND port will be matched.
+                                x-kubernetes-int-or-string: true
+                              protocol:
+                                default: TCP
+                                description: The protocol (TCP, UDP, or SCTP) which
+                                  traffic must match. If not specified, this field
+                                  defaults to TCP.
+                                type: string
+                            type: object
+                          type: array
+                        to:
+                          description: List of destinations to allow Egress to
+                          items:
+                            description: IPBlock describes a particular CIDR (Ex.
+                              "192.168.1.0/24","2001:db8::/64") that is allowed to
+                              the pods matched by a NetworkPolicySpec's podSelector.
+                              The except entry describes CIDRs that should not be
+                              included within this rule.
+                            properties:
+                              cidr:
+                                description: CIDR is a string representing the IP
+                                  Block Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                type: string
+                              except:
+                                description: Except is a slice of CIDRs that should
+                                  not be included within an IP Block Valid examples
+                                  are "192.168.1.0/24" or "2001:db8::/64" Except values
+                                  will be rejected if they are outside the CIDR range
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - cidr
+                            type: object
+                          type: array
+                      type: object
+                    type: array
+                  ingress:
+                    description: List of Ingress Rules to be applied to the Linode
+                      Firewall
+                    items:
+                      properties:
+                        from:
+                          description: List of sources to allow Ingress from
+                          items:
+                            description: IPBlock describes a particular CIDR (Ex.
+                              "192.168.1.0/24","2001:db8::/64") that is allowed to
+                              the pods matched by a NetworkPolicySpec's podSelector.
+                              The except entry describes CIDRs that should not be
+                              included within this rule.
+                            properties:
+                              cidr:
+                                description: CIDR is a string representing the IP
+                                  Block Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                type: string
+                              except:
+                                description: Except is a slice of CIDRs that should
+                                  not be included within an IP Block Valid examples
+                                  are "192.168.1.0/24" or "2001:db8::/64" Except values
+                                  will be rejected if they are outside the CIDR range
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - cidr
+                            type: object
+                          type: array
+                        ports:
+                          description: List of source ports to allow Ingress from
+                          items:
+                            description: NetworkPolicyPort describes a port to allow
+                              traffic on
+                            properties:
+                              endPort:
+                                description: If set, indicates that the range of ports
+                                  from port to endPort, inclusive, should be allowed
+                                  by the policy. This field cannot be defined if the
+                                  port field is not defined or if the port field is
+                                  defined as a named (string) port. The endPort must
+                                  be equal or greater than port.
+                                format: int32
+                                type: integer
+                              port:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: The port on the given protocol. This
+                                  can either be a numerical or named port on a pod.
+                                  If this field is not provided, this matches all
+                                  port names and numbers. If present, only traffic
+                                  on the specified protocol AND port will be matched.
+                                x-kubernetes-int-or-string: true
+                              protocol:
+                                default: TCP
+                                description: The protocol (TCP, UDP, or SCTP) which
+                                  traffic must match. If not specified, this field
+                                  defaults to TCP.
+                                type: string
+                            type: object
+                          type: array
+                      type: object
+                    type: array
+                type: object
+              nodepoolpolicies:
+                description: NodePoolPolicies list of NodePoolNetworkPolicySpec for
+                  each nodepool
                 items:
+                  description: NodePoolNetworkPolicySpec defines the desired state
+                    of a nodepools NetworkPolicy
                   properties:
-                    ports:
-                      description: List of destination ports to allow Egress to
-                      items:
-                        description: NetworkPolicyPort describes a port to allow traffic
-                          on
-                        properties:
-                          endPort:
-                            description: If set, indicates that the range of ports
-                              from port to endPort, inclusive, should be allowed by
-                              the policy. This field cannot be defined if the port
-                              field is not defined or if the port field is defined
-                              as a named (string) port. The endPort must be equal
-                              or greater than port.
-                            format: int32
-                            type: integer
-                          port:
-                            anyOf:
-                            - type: integer
-                            - type: string
-                            description: The port on the given protocol. This can
-                              either be a numerical or named port on a pod. If this
-                              field is not provided, this matches all port names and
-                              numbers. If present, only traffic on the specified protocol
-                              AND port will be matched.
-                            x-kubernetes-int-or-string: true
-                          protocol:
-                            default: TCP
-                            description: The protocol (TCP, UDP, or SCTP) which traffic
-                              must match. If not specified, this field defaults to
-                              TCP.
-                            type: string
-                        type: object
-                      type: array
-                    to:
-                      description: List of destinations to allow Egress to
-                      items:
-                        description: IPBlock describes a particular CIDR (Ex. "192.168.1.1/24","2001:db9::/64")
-                          that is allowed to the pods matched by a NetworkPolicySpec's
-                          podSelector. The except entry describes CIDRs that should
-                          not be included within this rule.
-                        properties:
-                          cidr:
-                            description: CIDR is a string representing the IP Block
-                              Valid examples are "192.168.1.1/24" or "2001:db9::/64"
-                            type: string
-                          except:
-                            description: Except is a slice of CIDRs that should not
-                              be included within an IP Block Valid examples are "192.168.1.1/24"
-                              or "2001:db9::/64" Except values will be rejected if
-                              they are outside the CIDR range
-                            items:
-                              type: string
-                            type: array
-                        required:
-                        - cidr
-                        type: object
-                      type: array
-                  type: object
-                type: array
-              ingress:
-                description: List of Ingress Rules to be applied to the Linode Firewall
-                items:
-                  properties:
-                    from:
-                      description: List of sources to allow Ingress from
-                      items:
-                        description: IPBlock describes a particular CIDR (Ex. "192.168.1.1/24","2001:db9::/64")
-                          that is allowed to the pods matched by a NetworkPolicySpec's
-                          podSelector. The except entry describes CIDRs that should
-                          not be included within this rule.
-                        properties:
-                          cidr:
-                            description: CIDR is a string representing the IP Block
-                              Valid examples are "192.168.1.1/24" or "2001:db9::/64"
-                            type: string
-                          except:
-                            description: Except is a slice of CIDRs that should not
-                              be included within an IP Block Valid examples are "192.168.1.1/24"
-                              or "2001:db9::/64" Except values will be rejected if
-                              they are outside the CIDR range
-                            items:
-                              type: string
-                            type: array
-                        required:
-                        - cidr
-                        type: object
-                      type: array
-                    ports:
-                      description: List of source ports to allow Ingress from
-                      items:
-                        description: NetworkPolicyPort describes a port to allow traffic
-                          on
-                        properties:
-                          endPort:
-                            description: If set, indicates that the range of ports
-                              from port to endPort, inclusive, should be allowed by
-                              the policy. This field cannot be defined if the port
-                              field is not defined or if the port field is defined
-                              as a named (string) port. The endPort must be equal
-                              or greater than port.
-                            format: int32
-                            type: integer
-                          port:
-                            anyOf:
-                            - type: integer
-                            - type: string
-                            description: The port on the given protocol. This can
-                              either be a numerical or named port on a pod. If this
-                              field is not provided, this matches all port names and
-                              numbers. If present, only traffic on the specified protocol
-                              AND port will be matched.
-                            x-kubernetes-int-or-string: true
-                          protocol:
-                            default: TCP
-                            description: The protocol (TCP, UDP, or SCTP) which traffic
-                              must match. If not specified, this field defaults to
-                              TCP.
-                            type: string
-                        type: object
-                      type: array
+                    networkpolicy:
+                      description: NetworkPolicySpec for the LKE Nodepool
+                      properties:
+                        egress:
+                          description: List of Egress Rules to be applied to the Linode
+                            Firewall
+                          items:
+                            properties:
+                              ports:
+                                description: List of destination ports to allow Egress
+                                  to
+                                items:
+                                  description: NetworkPolicyPort describes a port
+                                    to allow traffic on
+                                  properties:
+                                    endPort:
+                                      description: If set, indicates that the range
+                                        of ports from port to endPort, inclusive,
+                                        should be allowed by the policy. This field
+                                        cannot be defined if the port field is not
+                                        defined or if the port field is defined as
+                                        a named (string) port. The endPort must be
+                                        equal or greater than port.
+                                      format: int32
+                                      type: integer
+                                    port:
+                                      anyOf:
+                                      - type: integer
+                                      - type: string
+                                      description: The port on the given protocol.
+                                        This can either be a numerical or named port
+                                        on a pod. If this field is not provided, this
+                                        matches all port names and numbers. If present,
+                                        only traffic on the specified protocol AND
+                                        port will be matched.
+                                      x-kubernetes-int-or-string: true
+                                    protocol:
+                                      default: TCP
+                                      description: The protocol (TCP, UDP, or SCTP)
+                                        which traffic must match. If not specified,
+                                        this field defaults to TCP.
+                                      type: string
+                                  type: object
+                                type: array
+                              to:
+                                description: List of destinations to allow Egress
+                                  to
+                                items:
+                                  description: IPBlock describes a particular CIDR
+                                    (Ex. "192.168.1.0/24","2001:db8::/64") that is
+                                    allowed to the pods matched by a NetworkPolicySpec's
+                                    podSelector. The except entry describes CIDRs
+                                    that should not be included within this rule.
+                                  properties:
+                                    cidr:
+                                      description: CIDR is a string representing the
+                                        IP Block Valid examples are "192.168.1.0/24"
+                                        or "2001:db8::/64"
+                                      type: string
+                                    except:
+                                      description: Except is a slice of CIDRs that
+                                        should not be included within an IP Block
+                                        Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                        Except values will be rejected if they are
+                                        outside the CIDR range
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - cidr
+                                  type: object
+                                type: array
+                            type: object
+                          type: array
+                        ingress:
+                          description: List of Ingress Rules to be applied to the
+                            Linode Firewall
+                          items:
+                            properties:
+                              from:
+                                description: List of sources to allow Ingress from
+                                items:
+                                  description: IPBlock describes a particular CIDR
+                                    (Ex. "192.168.1.0/24","2001:db8::/64") that is
+                                    allowed to the pods matched by a NetworkPolicySpec's
+                                    podSelector. The except entry describes CIDRs
+                                    that should not be included within this rule.
+                                  properties:
+                                    cidr:
+                                      description: CIDR is a string representing the
+                                        IP Block Valid examples are "192.168.1.0/24"
+                                        or "2001:db8::/64"
+                                      type: string
+                                    except:
+                                      description: Except is a slice of CIDRs that
+                                        should not be included within an IP Block
+                                        Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                        Except values will be rejected if they are
+                                        outside the CIDR range
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - cidr
+                                  type: object
+                                type: array
+                              ports:
+                                description: List of source ports to allow Ingress
+                                  from
+                                items:
+                                  description: NetworkPolicyPort describes a port
+                                    to allow traffic on
+                                  properties:
+                                    endPort:
+                                      description: If set, indicates that the range
+                                        of ports from port to endPort, inclusive,
+                                        should be allowed by the policy. This field
+                                        cannot be defined if the port field is not
+                                        defined or if the port field is defined as
+                                        a named (string) port. The endPort must be
+                                        equal or greater than port.
+                                      format: int32
+                                      type: integer
+                                    port:
+                                      anyOf:
+                                      - type: integer
+                                      - type: string
+                                      description: The port on the given protocol.
+                                        This can either be a numerical or named port
+                                        on a pod. If this field is not provided, this
+                                        matches all port names and numbers. If present,
+                                        only traffic on the specified protocol AND
+                                        port will be matched.
+                                      x-kubernetes-int-or-string: true
+                                    protocol:
+                                      default: TCP
+                                      description: The protocol (TCP, UDP, or SCTP)
+                                        which traffic must match. If not specified,
+                                        this field defaults to TCP.
+                                      type: string
+                                  type: object
+                                type: array
+                            type: object
+                          type: array
+                      type: object
+                    nodepoolid:
+                      description: Id of the LKE Nodepool
+                      type: integer
+                  required:
+                  - nodepoolid
                   type: object
                 type: array
             type: object
@@ -170,22 +337,23 @@ spec:
             description: ClusterwideNetworkPolicyStatus defines the observed state
               of ClusterwideNetworkPolicy
             properties:
-              firewall:
-                description: The Linode Firewall backing the ClusterwideNetworkPolicy
-                properties:
-                  id:
-                    description: The ID of the Linode Firewall
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  label:
-                    description: The label of the Linode Firewall
-                    minLength: 0
-                    type: string
-                required:
-                - id
-                - label
-                type: object
+              firewalls:
+                description: The Linode Firewalls backing the ClusterwideNetworkPolicy
+                items:
+                  properties:
+                    id:
+                      description: The ID of the Linode Firewall
+                      minimum: 0
+                      type: integer
+                    label:
+                      description: The label of the Linode Firewall
+                      minLength: 0
+                      type: string
+                  required:
+                  - id
+                  - label
+                  type: object
+                type: array
             type: object
         type: object
     served: true
