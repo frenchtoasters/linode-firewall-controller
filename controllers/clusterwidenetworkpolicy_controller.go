@@ -502,7 +502,7 @@ func (r *ClusterwideNetworkPolicyReconciler) ReconcileNodes(ctx context.Context,
 		}
 		if !exists {
 			err := r.LinodeClient.DeleteFirewallDevice(ctx, firewallID, device.Entity.ID)
-			if err != nil {
+			if err != nil && err.Error() != "[404] Not found" {
 				log.Error(err, "unable to delete Firewall Device", "firewall", firewallID, "device", device.Entity.ID)
 				return err
 			}
